@@ -1,0 +1,117 @@
+rt=read.table(inputFile, header=T, sep="\t", check.names=F)
+rt=as.matrix(rt)
+rownames(rt)=rt[,1]
+exp=rt[,2:ncol(rt)]
+dimnames=list(rownames(exp),colnames(exp))
+data=matrix(as.numeric(as.matrix(exp)),nrow=nrow(exp),dimnames=dimnames)
+data=avereps(data)
+pbmc=CreateSeuratObject(counts=data, project="seurat", min.cells=3, min.features=50, names.delim = "_")
+pbmc[["percent.mt"]] <- PercentageFeatureSet(object = pbmc, pattern = "^MT-")
+pdf(file="01.featureViolin.pdf", width=15, height=8)
+VlnPlot(object = pbmc, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+dev.off()
+pbmc=subset(x = pbmc, subset = nFeature_RNA > 50 & percent.mt < 5)    #?????ݽ??й???
+
+pdf(file="01.featureCor.pdf", width=13, height=7)
+plot1 <- FeatureScatter(object = pbmc, feature1 = "nCount_RNA", feature2 = "percent.mt",pt.size=1.5)
+plot2 <- FeatureScatter(object = pbmc, feature1 = "nCount_RNA", feature2 = "nFeature_RNA",,pt.size=1.5)
+CombinePlots(plots = list(plot1, plot2))
+dev.off()
+
+pbmc <- NormalizeData(object=pbmc, normalization.method="LogNormalize", scale.factor=10000)
+pbmc <- FindVariableFeatures(object=pbmc, selection.method="vst", nfeatures=1500)
+top10 <- head(x = VariableFeatures(object = pbmc), 10)
+pdf(file="01.featureVar.pdf",width=10,height=6)
+plot1 <- VariableFeaturePlot(object = pbmc)
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
+CombinePlots(plots = list(plot1, plot2))
+dev.off()
+
+pbmc=ScaleData(pbmc)        #PCA??ά֮ǰ?ı?׼Ԥ???   ??
+pbmc=RunPCA(object= pbmc, npcs=20, pc.genes=VariableFeatures(object = pbmc))     #PCA????
+
+pdf(file="02.pcaGene.pdf", width=10, height=8)
+VizDimLoadings(object = pbmc, dims = 1:4, reduction = "pca", nfeatures=20)
+dev.off()
+
+pdf(file="02.PCA.pdf", width=7.5, height=5)
+DimPlot(object=pbmc, reduction="pca")
+dev.off()
+
+pdf(file="02.pcaHeatmap.pdf", width=10, height=8)
+DimHeatmap(object = pbmc, dims = 1:4, cells = 500, balanced = TRUE,nfeatures = 30,ncol=2)
+dev.off()
+
+pbmc <- JackStraw(object = pbmc, num.replicate = 100)
+pbmc <- ScoreJackStraw(object = pbmc, dims = 1:20)
+pdf(file="02.pcaJackStraw.pdf",width=8,height=6)
+JackStrawPlot(object=pbmc, dims=1:20)
+dev.off()
+
+pcSelect=20
+pbmc <- RunTSNE(object = pbmc, dims = 1:pcSelect)           #TSNE????
+pdf(file="03.TSNE.pdf",width=6.5,height=6)
+TSNEPlot(object = pbmc, pt.size = 2, label = TRUE)    #TSNE???ӻ?
+dev.off()
+write.table(pbmc$seurat_clusters,file="03.tsneCluster.txt",quote=F,sep="\t",col.names=F)
+
+pbmc.markers <- FindAllMarkers(object = pbmc,
+                               only.pos = FALSE,
+                               min.pct = 0.25,
+                               logfc.threshold = logFCfilter)
+sig.markers=pbmc.markers[(abs(as.numeric(as.vector(pbmc.markers$avg_log2FC)))>logFCfilter & as.numeric(as.vector(pbmc.markers$p_val_adj))<adjPvalFilter),]
+write.table(sig.markers,file="03.clusterMarkers.txt",sep="\t",row.names=F,quote=F)
+
+top10 <- pbmc.markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_log2FC)
+#????marker?ڸ???cluster????ͼ
+pdf(file="03.tsneHeatmap.pdf",width=15, height=15)
+DoHeatmap(object = pbmc, features = top10$gene) + NoLegend()
+dev.off()
+
+pbmc_for_SingleR <- GetAssayData(pbmc, slot="data")
+clusters<-pbmc@meta.data$seurat_clusters
+#ref=get(load("ref_Human_all.RData"))
+ref=celldex::HumanPrimaryCellAtlasData()
+singler=SingleR(test=pbmc_for_SingleR, ref =ref,
+                labels=ref$label.main, clusters = clusters)
+clusterAnn=as.data.frame(singler)
+clusterAnn=cbind(id=row.names(clusterAnn), clusterAnn)
+clusterAnn=clusterAnn[,c("id", "labels")]
+write.table(clusterAnn,file="04.clusterAnn.txt",quote=F,sep="\t", row.names=F)
+
+cellAnn=c()
+for(i in 1:length(pbmc$seurat_clusters)){
+	index=pbmc$seurat_clusters[i]
+	cellAnn=c(cellAnn, clusterAnn[index,2])
+}
+cellAnnOut=cbind(names(pbmc$seurat_clusters), cellAnn)
+colnames(cellAnnOut)=c("id", "labels")
+write.table(cellAnnOut, file="04.cellAnn.txt", quote=F, sep="\t", row.names=F)
+#?????????ı????????ļ?
+expMatrix=as.matrix(pbmc@assays$RNA@data)
+expMatrix=cbind(id=row.names(expMatrix), expMatrix)
+write.table(expMatrix, file="04.expMatirx.txt", quote=F, sep="\t", row.names=F)
+
+newLabels=singler$labels
+names(newLabels)=levels(pbmc)
+pbmc=RenameIdents(pbmc, newLabels)
+pdf(file="04.TSNE.pdf",width=7.5,height=6)
+TSNEPlot(object = pbmc, pt.size = 2, label = TRUE)    #TSNE???ӻ?
+dev.off()
+
+geneRT=read.csv(geneFile, header=T, sep=",", check.names=F)
+hubGenes=as.vector(geneRT[,1])
+#????marker??С????ͼ
+pdf(file="05.hubGeneViolin.pdf", width=20, height=16)
+VlnPlot(object = pbmc, features = hubGenes)
+dev.off()
+
+pdf(file="05.hubGeneScatter.pdf", width=14, height=10)
+FeaturePlot(object = pbmc, features = hubGenes, cols = c("green", "red"))
+dev.off()
+
+pdf(file="05.hubGeneBubble.pdf", width=15, height=8)
+DotPlot(object = pbmc, features = hubGenes)
+dev.off()
+
+
